@@ -30,6 +30,12 @@
 #define TONE1_DURATION_MS 500   // Duration Tone1 must be held (ms)
 #define TONE2_DURATION_MS 2000  // Duration Tone2 must be held (ms)
 
+// GPIO pin definitions
+#define GPIO_LED_TONE1    4     // LED indicating waiting for Tone1
+#define GPIO_LED_TONE2    5     // LED indicating waiting for Tone2  
+#define GPIO_RELAY        6     // Relay output for sequence complete
+#define GPIO_BYPASS_SWITCH 7    // Bypass switch input (HIGH=bypass, LOW=normal)
+
 #define SAMPLE_RATE     8192   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
 #define FRAME_SIZE      2048   // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
 #define BIN_TONE1       296    // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
@@ -41,6 +47,7 @@
 
 // SNR averaging parameters
 #define SNR_AVERAGE_COUNT 2     // Number of samples to average (2 frames = 0.5 seconds)
+#define SNR_THRESHOLD     20.0f // SNR detection threshold in dB
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -84,6 +91,10 @@ static uint32_t state_timer = 0;
 static SemaphoreHandle_t state_mutex = NULL;
 static TaskHandle_t worker_task_handle = NULL;
 
+// Switch state tracking for edge detection
+static bool switch_previous_state = false;
+static bool bypass_mode = false;
+
 // ============================================================================
 // FUNCTION DECLARATIONS
 // ============================================================================
@@ -102,6 +113,11 @@ static void state_machine_task(void *pvParameters);
 
 // ADC setup
 static void setup_adc_continuous(void);
+
+// GPIO setup
+static void setup_gpio(void);
+static void update_gpio_outputs(detection_state_t state);
+static bool read_bypass_switch(void);
 
 // Thread-safe state access
 static detection_state_t get_current_state(void);
@@ -301,9 +317,34 @@ static void worker_task(void *arg) {
 }
 
 static void state_machine_task(void *pvParameters) {
-    const float SNR_THRESHOLD = 20.0f;        // 20dB SNR detection threshold
-    
     while (true) {
+        // Read bypass switch and handle state changes
+        bool switch_current_state = read_bypass_switch();
+        
+        // Detect HIGH to LOW transition (reset to idle)
+        if (switch_previous_state && !switch_current_state) {
+            ESP_LOGI(TAG, "Switch HIGH->LOW: Resetting to IDLE state");
+            set_current_state(STATE_IDLE);
+            bypass_mode = false;
+        }
+        // Detect LOW to HIGH transition (enter bypass mode)
+        else if (!switch_previous_state && switch_current_state) {
+            ESP_LOGI(TAG, "Switch LOW->HIGH: Entering bypass mode - SEQUENCE COMPLETE");
+            set_current_state(STATE_SEQUENCE_COMPLETE);
+            bypass_mode = true;
+        }
+        
+        switch_previous_state = switch_current_state;
+        
+        // Update GPIO outputs based on current state
+        detection_state_t current = get_current_state();
+        update_gpio_outputs(current);
+        
+        // Skip tone detection if in bypass mode
+        if (bypass_mode) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         if (mag_mutex && xSemaphoreTake(mag_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             float local_snr_tone1 = snr_tone1;
             float local_snr_tone2 = snr_tone2;
@@ -372,13 +413,12 @@ static void state_machine_task(void *pvParameters) {
                     break;
                     
                 case STATE_SEQUENCE_COMPLETE:
-                    ESP_LOGI(TAG, "2-tone sequence completed! Ready for GPIO actions.");
-                    // TODO: Add GPIO control tasks here
+                    ESP_LOGI(TAG, "2-tone sequence completed! Relay activated.");
                     
-                    // Reset to idle after 5 seconds
+                    // Reset to idle after 60 seconds
                     if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                         if ((current_tick - state_timer) >= pdMS_TO_TICKS(60000)) {
-                            ESP_LOGI(TAG, "Resetting to idle state");
+                            ESP_LOGI(TAG, "Auto-resetting to idle state after 60 seconds");
                             current_state = STATE_IDLE;
                         }
                         xSemaphoreGive(state_mutex);
@@ -399,7 +439,7 @@ static void setup_adc_continuous(void) {
 
     adc_digi_pattern_config_t pattern = {
         .atten = ADC_ATTEN_DB_12,           // 12dB attenuation
-        .channel = ADC_CHANNEL_6,           // GPIO34
+        .channel = ADC_CHANNEL_1,           // GPIO2
         .unit = ADC_UNIT_1,                 // ADC unit 1
         .bit_width = ADC_BITWIDTH_12,       // 12-bit width
     };
@@ -421,9 +461,70 @@ static void setup_adc_continuous(void) {
     ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
 }
 
+static void setup_gpio(void) {
+    // Configure LED and relay outputs
+    gpio_config_t output_config = {
+        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_RELAY),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&output_config));
+    
+    // Initialize outputs to OFF
+    gpio_set_level(GPIO_LED_TONE1, 0);
+    gpio_set_level(GPIO_LED_TONE2, 0);
+    gpio_set_level(GPIO_RELAY, 0);
+    
+    // Configure bypass switch input with pulldown
+    gpio_config_t input_config = {
+        .pin_bit_mask = (1ULL << GPIO_BYPASS_SWITCH),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,  // Switch HIGH = bypass
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&input_config));
+    
+    ESP_LOGI(TAG, "GPIO initialized - LED1:%d, LED2:%d, Relay:%d, Switch:%d", 
+             GPIO_LED_TONE1, GPIO_LED_TONE2, GPIO_RELAY, GPIO_BYPASS_SWITCH);
+}
+
+static void update_gpio_outputs(detection_state_t state) {
+    switch (state) {
+        case STATE_IDLE:
+        case STATE_TONE1_DETECTED:
+            gpio_set_level(GPIO_LED_TONE1, 1);  // LED1 ON - waiting for Tone1
+            gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
+            gpio_set_level(GPIO_RELAY, 0);      // Relay OFF
+            break;
+            
+        case STATE_WAIT_TONE2:
+        case STATE_TONE2_DETECTED:
+            gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
+            gpio_set_level(GPIO_LED_TONE2, 1);  // LED2 ON - waiting for Tone2
+            gpio_set_level(GPIO_RELAY, 0);      // Relay OFF
+            break;
+            
+        case STATE_SEQUENCE_COMPLETE:
+            gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
+            gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
+            gpio_set_level(GPIO_RELAY, 1);      // Relay ON - sequence complete!
+            break;
+    }
+}
+
+static bool read_bypass_switch(void) {
+    return gpio_get_level(GPIO_BYPASS_SWITCH);
+}
+
 void app_main(void) {
 
     compute_hamming_window();
+
+    /* Initialize GPIO before other components */
+    setup_gpio();
 
     /* Create single worker task that will be notified by the ADC callback,
      * read frames from the driver and process them. */
@@ -441,6 +542,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "2-Tone Decoder initialized - waiting for tone sequence...");
 
     while (true) {
+/*
         if (mag_mutex && xSemaphoreTake(mag_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             float local_snr_tone1 = snr_tone1;
             float local_snr_tone2 = snr_tone2;
@@ -450,6 +552,7 @@ void app_main(void) {
             ESP_LOGI(TAG, "State: %d | SNR: Tone1=%.1fdB, Tone2=%.1fdB", 
                      current, local_snr_tone1, local_snr_tone2);
         }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Ensure 1s between prints
+*/
+        vTaskDelay(pdMS_TO_TICKS(10000)); // 10 second delay - main loop has no active functionality
     }
 }

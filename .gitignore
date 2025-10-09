@@ -1,3 +1,7 @@
 build/
 sdkconfig
 sdkconfig.old
+
+# VS Code specific files
+.vscode/
+*.code-workspace

@@ -31,10 +31,10 @@
 #define TONE2_DURATION_MS 2000  // Duration Tone2 must be held (ms)
 
 // GPIO pin definitions
-#define GPIO_LED_TONE1    4     // LED indicating waiting for Tone1
-#define GPIO_LED_TONE2    5     // LED indicating waiting for Tone2  
-#define GPIO_RELAY        6     // Relay output for sequence complete
-#define GPIO_BYPASS_SWITCH 7    // Bypass switch input (HIGH=bypass, LOW=normal)
+#define GPIO_LED_TONE1    6     // LED indicating waiting for Tone1
+#define GPIO_LED_TONE2    7     // LED indicating waiting for Tone2  
+#define GPIO_RELAY        8     // Relay output for sequence complete
+#define GPIO_BYPASS_SWITCH 4    // Bypass switch input (HIGH=bypass, LOW=normal)
 
 #define SAMPLE_RATE     8192   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
 #define FRAME_SIZE      2048   // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)

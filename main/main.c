@@ -30,11 +30,11 @@
 #define TONE1_DURATION_MS 500   // Duration Tone1 must be held (ms)
 #define TONE2_DURATION_MS 2000  // Duration Tone2 must be held (ms)
 
-// GPIO pin definitions
-#define GPIO_LED_TONE1    7     // LED indicating waiting for Tone1
-#define GPIO_LED_TONE2    6     // LED indicating waiting for Tone2  
-#define GPIO_RELAY        5     // Relay output for sequence complete
-#define GPIO_BYPASS_SWITCH 12    // Bypass switch input (HIGH=bypass, LOW=normal)
+// GPIO pin definitions (use enum names for clarity and type-safety)
+#define GPIO_LED_TONE1    GPIO_NUM_7     // LED indicating waiting for Tone1
+#define GPIO_LED_TONE2    GPIO_NUM_6     // LED indicating waiting for Tone2  
+#define GPIO_RELAY        GPIO_NUM_5     // Relay output for sequence complete
+#define GPIO_BYPASS_SWITCH GPIO_NUM_12   // Bypass switch input (HIGH=bypass, LOW=normal)
 
 #define SAMPLE_RATE     8192   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
 #define FRAME_SIZE      2048   // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
@@ -464,7 +464,16 @@ static void setup_adc_continuous(void) {
 static void setup_gpio(void) {
     // Configure LED and relay outputs
     gpio_config_t output_config = {
-        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_RELAY),
+        /*
+         * Drive application outputs and unused exposed pins GPIO1..GPIO13 (that are
+         * not used by this project) as outputs LOW to minimize noise on the
+         * ESP32-S3 Mini module. Pins added here: GPIO1, GPIO3, GPIO4, GPIO8,
+         * GPIO9, GPIO10, GPIO11, GPIO13
+         */
+        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_RELAY) \
+                        | (1ULL << GPIO_NUM_1) | (1ULL << GPIO_NUM_3) | (1ULL << GPIO_NUM_4) \
+                        | (1ULL << GPIO_NUM_8) | (1ULL << GPIO_NUM_9) | (1ULL << GPIO_NUM_10) \
+                        | (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_13),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -476,6 +485,15 @@ static void setup_gpio(void) {
     gpio_set_level(GPIO_LED_TONE1, 0);
     gpio_set_level(GPIO_LED_TONE2, 0);
     gpio_set_level(GPIO_RELAY, 0);
+    // Drive additional exposed GPIOs LOW to minimize noise
+    gpio_set_level(GPIO_NUM_1, 0);
+    gpio_set_level(GPIO_NUM_3, 0);
+    gpio_set_level(GPIO_NUM_4, 0);
+    gpio_set_level(GPIO_NUM_8, 0);
+    gpio_set_level(GPIO_NUM_9, 0);
+    gpio_set_level(GPIO_NUM_10, 0);
+    gpio_set_level(GPIO_NUM_11, 0);
+    gpio_set_level(GPIO_NUM_13, 0);
     
     // Configure bypass switch input with pulldown
     gpio_config_t input_config = {

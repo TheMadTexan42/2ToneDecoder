@@ -36,14 +36,18 @@
 #define GPIO_RELAY        GPIO_NUM_5     // Relay output for sequence complete
 #define GPIO_BYPASS_SWITCH GPIO_NUM_12   // Bypass switch input (HIGH=bypass, LOW=normal)
 
+/* Relay polarity: simplify to fixed values for this project.
+ * RELAY_ON = 0, RELAY_OFF = 1 (active-low relay wiring)
+ */
+#define RELAY_ON  0
+#define RELAY_OFF 1
+
 #define SAMPLE_RATE     8192   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
 #define FRAME_SIZE      2048   // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
 #define BIN_TONE1       296    // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
 #define BIN_TONE2       321    // Center bin for TONE2_FREQ (1285.8 * 2048 / 8192 = 321.45 → bin 321)
 
-// Calibration factors to normalize frequency response (values need to be re-measured for new frequencies)
-#define CAL_TONE1       1.0f    // Reference frequency (no scaling)
-#define CAL_TONE2       1.0f    // Scale factor: needs to be measured and calibrated
+// Calibration factors removed — not needed for these low, closely spaced tones
 
 // SNR averaging parameters
 #define SNR_AVERAGE_COUNT 2     // Number of samples to average (2 frames = 0.5 seconds)
@@ -291,8 +295,8 @@ static void worker_task(void *arg) {
                 float mtone2_leakage = (mtone2_leak_high + mtone2_leak_low) / 2.0f;
                 
                 // Calculate SNR in dB for both frequencies (simplified with Hamming window)
-                float signal_tone1 = fmaxf(0.0f, mtone1_signal - 0.1f*mtone1_leakage) * CAL_TONE1;
-                float signal_tone2 = fmaxf(0.0f, mtone2_signal - 0.1f*mtone2_leakage) * CAL_TONE2;
+                float signal_tone1 = fmaxf(0.0f, mtone1_signal - 0.1f*mtone1_leakage);
+                float signal_tone2 = fmaxf(0.0f, mtone2_signal - 0.1f*mtone2_leakage);
                 
                 // Convert to SNR in dB (avoid log(0) by using small minimum value)
                 float snr_tone1_db = 20.0f * log10f(fmaxf(signal_tone1, 1.0f) / fmaxf(noise_floor, 1.0f));
@@ -484,7 +488,7 @@ static void setup_gpio(void) {
     // Initialize outputs to OFF
     gpio_set_level(GPIO_LED_TONE1, 0);
     gpio_set_level(GPIO_LED_TONE2, 0);
-    gpio_set_level(GPIO_RELAY, 0);
+    gpio_set_level(GPIO_RELAY, RELAY_OFF);
     // Drive additional exposed GPIOs LOW to minimize noise
     gpio_set_level(GPIO_NUM_1, 0);
     gpio_set_level(GPIO_NUM_3, 0);
@@ -528,7 +532,7 @@ static void update_gpio_outputs(detection_state_t state) {
         case STATE_SEQUENCE_COMPLETE:
             gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
             gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
-            gpio_set_level(GPIO_RELAY, 1);      // Relay ON - sequence complete!
+            gpio_set_level(GPIO_RELAY, RELAY_ON);      // Relay ON - sequence complete!
             break;
     }
 }

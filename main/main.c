@@ -32,8 +32,11 @@
 
 // GPIO pin definitions (use enum names for clarity and type-safety)
 #define GPIO_LED_TONE1    GPIO_NUM_7     // LED indicating waiting for Tone1
-#define GPIO_LED_TONE2    GPIO_NUM_6     // LED indicating waiting for Tone2  
-#define GPIO_RELAY        GPIO_NUM_5     // Relay output for sequence complete
+#define GPIO_LED_TONE2    GPIO_NUM_6     // LED indicating waiting for Tone2
+// New LED to indicate relay state
+#define GPIO_LED_RELAY    GPIO_NUM_5     // LED indicating relay state
+// Relay moved to GPIO1
+#define GPIO_RELAY        GPIO_NUM_1     // Relay output for sequence complete
 #define GPIO_BYPASS_SWITCH GPIO_NUM_12   // Bypass switch input (HIGH=bypass, LOW=normal)
 
 /* Relay polarity: simplify to fixed values for this project.
@@ -322,22 +325,27 @@ static void worker_task(void *arg) {
 
 static void state_machine_task(void *pvParameters) {
     while (true) {
-        // Read bypass switch and handle state changes
-        bool switch_current_state = read_bypass_switch();
-        
-        // Detect HIGH to LOW transition (reset to idle)
+        // Read bypass switch and handle state changes (momentary active-low button)
+        bool switch_current_state = read_bypass_switch(); // 1 when unpressed, 0 when pressed
+
+        // Detect falling edge: HIGH -> LOW (button press). Debounce and toggle bypass_mode.
         if (switch_previous_state && !switch_current_state) {
-            ESP_LOGI(TAG, "Switch HIGH->LOW: Resetting to IDLE state");
-            set_current_state(STATE_IDLE);
-            bypass_mode = false;
+            // simple debounce: wait 50ms then verify still pressed
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if (!read_bypass_switch()) {
+                // Toggle bypass mode
+                bypass_mode = !bypass_mode;
+                if (bypass_mode) {
+                    ESP_LOGI(TAG, "Button pressed: Entering bypass mode - SEQUENCE COMPLETE");
+                    set_current_state(STATE_SEQUENCE_COMPLETE);
+                } else {
+                    ESP_LOGI(TAG, "Button pressed: Exiting bypass mode - returning to WAITING");
+                    set_current_state(STATE_IDLE);
+                }
+            }
         }
-        // Detect LOW to HIGH transition (enter bypass mode)
-        else if (!switch_previous_state && switch_current_state) {
-            ESP_LOGI(TAG, "Switch LOW->HIGH: Entering bypass mode - SEQUENCE COMPLETE");
-            set_current_state(STATE_SEQUENCE_COMPLETE);
-            bypass_mode = true;
-        }
-        
+
+        // Save state for next iteration
         switch_previous_state = switch_current_state;
         
         // Update GPIO outputs based on current state
@@ -474,10 +482,10 @@ static void setup_gpio(void) {
          * ESP32-S3 Mini module. Pins added here: GPIO1, GPIO3, GPIO4, GPIO8,
          * GPIO9, GPIO10, GPIO11, GPIO13
          */
-        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_RELAY) \
-                        | (1ULL << GPIO_NUM_1) | (1ULL << GPIO_NUM_3) | (1ULL << GPIO_NUM_4) \
-                        | (1ULL << GPIO_NUM_8) | (1ULL << GPIO_NUM_9) | (1ULL << GPIO_NUM_10) \
-                        | (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_13),
+        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_LED_RELAY) | (1ULL << GPIO_RELAY) \
+                | (1ULL << GPIO_NUM_3) | (1ULL << GPIO_NUM_4) \
+                | (1ULL << GPIO_NUM_8) | (1ULL << GPIO_NUM_9) | (1ULL << GPIO_NUM_10) \
+                | (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_13),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -488,9 +496,9 @@ static void setup_gpio(void) {
     // Initialize outputs to OFF
     gpio_set_level(GPIO_LED_TONE1, 0);
     gpio_set_level(GPIO_LED_TONE2, 0);
+    gpio_set_level(GPIO_LED_RELAY, 0);
     gpio_set_level(GPIO_RELAY, RELAY_OFF);
-    // Drive additional exposed GPIOs LOW to minimize noise
-    gpio_set_level(GPIO_NUM_1, 0);
+    // Drive additional exposed GPIOs LOW to minimize noise (excluding relay GPIO which is handled above)
     gpio_set_level(GPIO_NUM_3, 0);
     gpio_set_level(GPIO_NUM_4, 0);
     gpio_set_level(GPIO_NUM_8, 0);
@@ -503,36 +511,44 @@ static void setup_gpio(void) {
     gpio_config_t input_config = {
         .pin_bit_mask = (1ULL << GPIO_BYPASS_SWITCH),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE,  // Switch HIGH = bypass
+        .pull_up_en = GPIO_PULLUP_ENABLE,      // Use internal pull-up for momentary active-low button
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, 
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&input_config));
     
-    ESP_LOGI(TAG, "GPIO initialized - LED1:%d, LED2:%d, Relay:%d, Switch:%d", 
-             GPIO_LED_TONE1, GPIO_LED_TONE2, GPIO_RELAY, GPIO_BYPASS_SWITCH);
+    ESP_LOGI(TAG, "GPIO initialized - LED1:%d, LED2:%d, LED_RELAY:%d, Relay:%d, Switch:%d", 
+             GPIO_LED_TONE1, GPIO_LED_TONE2, GPIO_LED_RELAY, GPIO_RELAY, GPIO_BYPASS_SWITCH);
+
+    // Initialize switch_previous_state to the current (idle) level so edge detection starts correct
+    switch_previous_state = read_bypass_switch(); // should be HIGH (1) when button unpressed due to pull-up
 }
 
 static void update_gpio_outputs(detection_state_t state) {
     switch (state) {
         case STATE_IDLE:
         case STATE_TONE1_DETECTED:
+            // Waiting for / holding Tone1: indicate by turning LED1 ON
             gpio_set_level(GPIO_LED_TONE1, 1);  // LED1 ON - waiting for Tone1
             gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
-            gpio_set_level(GPIO_RELAY, 0);      // Relay OFF
+            gpio_set_level(GPIO_RELAY, RELAY_OFF);      // Relay OFF
+            gpio_set_level(GPIO_LED_RELAY, 0);          // Relay LED OFF
             break;
             
         case STATE_WAIT_TONE2:
         case STATE_TONE2_DETECTED:
+            // Waiting for / holding Tone2: indicate by turning LED2 ON
             gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
             gpio_set_level(GPIO_LED_TONE2, 1);  // LED2 ON - waiting for Tone2
-            gpio_set_level(GPIO_RELAY, 0);      // Relay OFF
+            gpio_set_level(GPIO_RELAY, RELAY_OFF);      // Relay OFF
+            gpio_set_level(GPIO_LED_RELAY, 0);          // Relay LED OFF
             break;
             
         case STATE_SEQUENCE_COMPLETE:
             gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
             gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
             gpio_set_level(GPIO_RELAY, RELAY_ON);      // Relay ON - sequence complete!
+            gpio_set_level(GPIO_LED_RELAY, 1);         // Relay LED ON
             break;
     }
 }

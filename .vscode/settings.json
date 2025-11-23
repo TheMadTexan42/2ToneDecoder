@@ -11,5 +11,10 @@
   },
   "idf.flashType": "UART",
   "idf.portWin": "COM3",
-  "idf.monitorPort": "COM9"
+  "idf.monitorPort": "COM9",
+  "editor.folding": true,
+  "editor.showFoldingControls": "always",
+  "editor.foldingStrategy": "indentation"
 }
+// Note: these are workspace settings; change them if you prefer a different behavior.
+

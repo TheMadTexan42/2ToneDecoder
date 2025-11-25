@@ -21,47 +21,48 @@
 #include "driver/gpio.h"
 
 // ============================================================================
-// DEFINES
+// Static constants
 // ============================================================================
-#define TONE1_FREQ      1185.2f // First tone frequency in Hz
-#define TONE2_FREQ      1285.8f // Second tone frequency in Hz
+// GPIO pin definitions (use typed `gpio_num_t` constants for clarity and type-safety)
+static const gpio_num_t GPIO_LED_TONE1 = GPIO_NUM_7;    // LED indicating waiting for Tone1
+static const gpio_num_t GPIO_LED_TONE2 = GPIO_NUM_6;    // LED indicating waiting for Tone2
+static const gpio_num_t GPIO_LED_SPEAKER = GPIO_NUM_5;   // LED indicating speaker state
+static const gpio_num_t GPIO_SPEAKER = GPIO_NUM_1;      // GPIO that controls the speaker relay driver
+static const gpio_num_t GPIO_BYPASS_SWITCH = GPIO_NUM_12;   // Bypass switch input (HIGH=unpressed, LOW=pressed)
 
-// Tone duration requirements
-#define TONE1_DURATION_MS 500   // Duration Tone1 must be held (ms)
-#define TONE2_DURATION_MS 2000  // Duration Tone2 must be held (ms)
+// Speaker polarity: active-low (drive LOW to turn speaker on)
+static const int SPEAKER_ON = 0;
+static const int SPEAKER_OFF = 1;
 
-// GPIO pin definitions (use enum names for clarity and type-safety)
-#define GPIO_LED_TONE1    GPIO_NUM_7     // LED indicating waiting for Tone1
-#define GPIO_LED_TONE2    GPIO_NUM_6     // LED indicating waiting for Tone2
-// New LED to indicate relay state
-#define GPIO_LED_RELAY    GPIO_NUM_5     // LED indicating relay state
-// Relay moved to GPIO1
-#define GPIO_RELAY        GPIO_NUM_1     // Relay output for sequence complete
-#define GPIO_BYPASS_SWITCH GPIO_NUM_12   // Bypass switch input (HIGH=bypass, LOW=normal)
+// LED polarity: active-high (drive HIGH to turn LED on)
+static const int LED_ON = 1;
+static const int LED_OFF = 0;
 
-/* Relay polarity: simplify to fixed values for this project.
- * RELAY_ON = 0, RELAY_OFF = 1 (active-low relay wiring)
- */
-#define RELAY_ON  0
-#define RELAY_OFF 1
-
-#define SAMPLE_RATE     8192   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
-#define FRAME_SIZE      2048   // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
-#define BIN_TONE1       296    // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
-#define BIN_TONE2       321    // Center bin for TONE2_FREQ (1285.8 * 2048 / 8192 = 321.45 → bin 321)
-
-// Calibration factors removed — not needed for these low, closely spaced tones
-
-// SNR averaging parameters
-#define SNR_AVERAGE_COUNT 2     // Number of samples to average (2 frames = 0.5 seconds)
-#define SNR_THRESHOLD     20.0f // SNR detection threshold in dB
+// Tone duration requirements (ms)
+static const uint32_t TONE1_DURATION_MS = 500;   // Duration Tone1 must be held (ms)
+static const uint32_t TONE2_DURATION_MS = 2000;  // Duration Tone2 must be held (ms)
 
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
+
+// Sample/frame/bin constants (enum for compile-time integer constants)
+enum {
+    SAMPLE_RATE = 8192,   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
+    FRAME_SIZE = 2048,    // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
+    BIN_TONE1 = 296,      // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
+    BIN_TONE2 = 321       // Center bin for TONE2_FREQ (1285.8 * 2048 / 8192 = 321.45 → bin 321)
+};
+
+// SNR averaging parameters (enum for compile-time constants)
+enum {
+    SNR_AVERAGE_COUNT = 2
+};
+static const float SNR_THRESHOLD = 20.0f; // SNR detection threshold in dB
+
 // State machine for 2-tone detection
 typedef enum {
-    STATE_IDLE,           // Waiting for Tone1
+    STATE_WAIT_TONE1,     // Waiting for Tone1
     STATE_TONE1_DETECTED, // Tone1 detected, waiting for duration
     STATE_WAIT_TONE2,     // Waiting for Tone2
     STATE_TONE2_DETECTED, // Tone2 detected, waiting for duration
@@ -93,7 +94,7 @@ static uint32_t snr_index = 0;
 static bool snr_buffer_full = false;
 
 // State machine
-static detection_state_t current_state = STATE_IDLE;
+static detection_state_t current_state = STATE_WAIT_TONE1;
 static uint32_t state_timer = 0;
 static SemaphoreHandle_t state_mutex = NULL;
 static TaskHandle_t worker_task_handle = NULL;
@@ -199,7 +200,7 @@ static bool IRAM_ATTR adc_isr_callback(adc_continuous_handle_t handle, const adc
 
 // Thread-safe state access functions
 static detection_state_t get_current_state(void) {
-    detection_state_t state = STATE_IDLE;
+    detection_state_t state = STATE_WAIT_TONE1;
     if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         state = current_state;
         xSemaphoreGive(state_mutex);
@@ -333,14 +334,18 @@ static void state_machine_task(void *pvParameters) {
             // simple debounce: wait 50ms then verify still pressed
             vTaskDelay(pdMS_TO_TICKS(50));
             if (!read_bypass_switch()) {
-                // Toggle bypass mode
-                bypass_mode = !bypass_mode;
-                if (bypass_mode) {
-                    ESP_LOGI(TAG, "Button pressed: Entering bypass mode - SEQUENCE COMPLETE");
-                    set_current_state(STATE_SEQUENCE_COMPLETE);
+                // Determine current state and toggle between SEQUENCE_COMPLETE and IDLE
+                detection_state_t cur = get_current_state();
+                if (cur == STATE_SEQUENCE_COMPLETE) {
+                    // If currently sequence complete, go back to waiting for Tone1
+                    ESP_LOGI(TAG, "Button pressed: Exiting sequence -> returning to WAITING");
+                    set_current_state(STATE_WAIT_TONE1);
+                    bypass_mode = false;
                 } else {
-                    ESP_LOGI(TAG, "Button pressed: Exiting bypass mode - returning to WAITING");
-                    set_current_state(STATE_IDLE);
+                    // Otherwise, force sequence-complete/bypass mode
+                    ESP_LOGI(TAG, "Button pressed: Forcing SEQUENCE_COMPLETE (bypass)");
+                    set_current_state(STATE_SEQUENCE_COMPLETE);
+                    bypass_mode = true;
                 }
             }
         }
@@ -367,7 +372,7 @@ static void state_machine_task(void *pvParameters) {
             uint32_t current_tick = xTaskGetTickCount();
             
             switch (state) {
-                case STATE_IDLE:
+                case STATE_WAIT_TONE1:
                     if (local_snr_tone1 > SNR_THRESHOLD) {
                         ESP_LOGI(TAG, "Tone1 detected (%.1fdB), starting timer", local_snr_tone1);
                         set_current_state_with_timer(STATE_TONE1_DETECTED);
@@ -386,8 +391,8 @@ static void state_machine_task(void *pvParameters) {
                             xSemaphoreGive(state_mutex);
                         }
                     } else {
-                        ESP_LOGI(TAG, "Tone1 lost, returning to idle");
-                        set_current_state(STATE_IDLE);
+                        ESP_LOGI(TAG, "Tone1 lost, returning to WAIT_TONE1");
+                        set_current_state(STATE_WAIT_TONE1);
                     }
                     break;
                     
@@ -399,8 +404,8 @@ static void state_machine_task(void *pvParameters) {
                         // Timeout if we don't get Tone2 within reasonable time (10 seconds)
                         if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                             if ((current_tick - state_timer) >= pdMS_TO_TICKS(10000)) {
-                                ESP_LOGI(TAG, "Timeout waiting for Tone2, returning to idle");
-                                current_state = STATE_IDLE;
+                                ESP_LOGI(TAG, "Timeout waiting for Tone2, returning to WAIT_TONE1");
+                                current_state = STATE_WAIT_TONE1;
                             }
                             xSemaphoreGive(state_mutex);
                         }
@@ -419,19 +424,19 @@ static void state_machine_task(void *pvParameters) {
                             xSemaphoreGive(state_mutex);
                         }
                     } else {
-                        ESP_LOGI(TAG, "Tone2 lost, returning to IDLE");
-                        set_current_state_with_timer(STATE_IDLE);
+                        ESP_LOGI(TAG, "Tone2 lost, returning to WAIT_TONE1");
+                        set_current_state_with_timer(STATE_WAIT_TONE1);
                     }
                     break;
                     
                 case STATE_SEQUENCE_COMPLETE:
-                    ESP_LOGI(TAG, "2-tone sequence completed! Relay activated.");
+                    ESP_LOGI(TAG, "2-tone sequence completed! Speaker activated.");
                     
                     // Reset to idle after 60 seconds
                     if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                         if ((current_tick - state_timer) >= pdMS_TO_TICKS(60000)) {
-                            ESP_LOGI(TAG, "Auto-resetting to idle state after 60 seconds");
-                            current_state = STATE_IDLE;
+                            ESP_LOGI(TAG, "Auto-resetting to WAIT_TONE1 state after 60 seconds");
+                            current_state = STATE_WAIT_TONE1;
                         }
                         xSemaphoreGive(state_mutex);
                     }
@@ -474,15 +479,14 @@ static void setup_adc_continuous(void) {
 }
 
 static void setup_gpio(void) {
-    // Configure LED and relay outputs
+    // Configure LED and speaker outputs
     gpio_config_t output_config = {
         /*
-         * Drive application outputs and unused exposed pins GPIO1..GPIO13 (that are
-         * not used by this project) as outputs LOW to minimize noise on the
-         * ESP32-S3 Mini module. Pins added here: GPIO1, GPIO3, GPIO4, GPIO8,
-         * GPIO9, GPIO10, GPIO11, GPIO13
+         * Drive application outputs and unused exposed pins that are
+         * not used by this project as outputs LOW to minimize noise on the
+         * ESP32-S3 Mini module. 
          */
-        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_LED_RELAY) | (1ULL << GPIO_RELAY) \
+        .pin_bit_mask = (1ULL << GPIO_LED_TONE1) | (1ULL << GPIO_LED_TONE2) | (1ULL << GPIO_LED_SPEAKER) | (1ULL << GPIO_SPEAKER) \
                 | (1ULL << GPIO_NUM_3) | (1ULL << GPIO_NUM_4) \
                 | (1ULL << GPIO_NUM_8) | (1ULL << GPIO_NUM_9) | (1ULL << GPIO_NUM_10) \
                 | (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_13),
@@ -493,12 +497,9 @@ static void setup_gpio(void) {
     };
     ESP_ERROR_CHECK(gpio_config(&output_config));
     
-    // Initialize outputs to OFF
-    gpio_set_level(GPIO_LED_TONE1, 0);
-    gpio_set_level(GPIO_LED_TONE2, 0);
-    gpio_set_level(GPIO_LED_RELAY, 0);
-    gpio_set_level(GPIO_RELAY, RELAY_OFF);
-    // Drive additional exposed GPIOs LOW to minimize noise (excluding relay GPIO which is handled above)
+    // Initial output levels are set by `update_gpio_outputs()` at the end of init
+    // (we start in bypass mode so `update_gpio_outputs()` will enable the speaker/LED).
+    // Drive additional exposed GPIOs LOW to minimize noise (excluding speaker GPIO which is handled above)
     gpio_set_level(GPIO_NUM_3, 0);
     gpio_set_level(GPIO_NUM_4, 0);
     gpio_set_level(GPIO_NUM_8, 0);
@@ -517,38 +518,45 @@ static void setup_gpio(void) {
     };
     ESP_ERROR_CHECK(gpio_config(&input_config));
     
-    ESP_LOGI(TAG, "GPIO initialized - LED1:%d, LED2:%d, LED_RELAY:%d, Relay:%d, Switch:%d", 
-             GPIO_LED_TONE1, GPIO_LED_TONE2, GPIO_LED_RELAY, GPIO_RELAY, GPIO_BYPASS_SWITCH);
+    ESP_LOGI(TAG, "GPIO initialized - LED1:%d, LED2:%d, LED_SPEAKER:%d, Speaker:%d, Switch:%d", 
+             GPIO_LED_TONE1, GPIO_LED_TONE2, GPIO_LED_SPEAKER, GPIO_SPEAKER, GPIO_BYPASS_SWITCH);
 
-    // Initialize switch_previous_state to the current (idle) level so edge detection starts correct
-    switch_previous_state = read_bypass_switch(); // should be HIGH (1) when button unpressed due to pull-up
+    // Do not read the physical button here — we hard-code the boot state to bypass.
+    switch_previous_state = true; // assume HIGH (1) when button unpressed due to pull-up
+
+    // Start in bypass mode at power-on: treat system as SEQUENCE_COMPLETE
+    bypass_mode = true;
+    current_state = STATE_SEQUENCE_COMPLETE;
+    ESP_LOGI(TAG, "Starting in bypass mode (SEQUENCE_COMPLETE)");
+    // Update outputs immediately so speaker/LED match initial bypass state
+    update_gpio_outputs(current_state);
 }
 
 static void update_gpio_outputs(detection_state_t state) {
     switch (state) {
-        case STATE_IDLE:
+        case STATE_WAIT_TONE1:
         case STATE_TONE1_DETECTED:
             // Waiting for / holding Tone1: indicate by turning LED1 ON
-            gpio_set_level(GPIO_LED_TONE1, 1);  // LED1 ON - waiting for Tone1
-            gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
-            gpio_set_level(GPIO_RELAY, RELAY_OFF);      // Relay OFF
-            gpio_set_level(GPIO_LED_RELAY, 0);          // Relay LED OFF
+            gpio_set_level(GPIO_LED_TONE1, LED_ON);  // LED1 ON - waiting for Tone1
+            gpio_set_level(GPIO_LED_TONE2, LED_OFF);  // LED2 OFF
+            gpio_set_level(GPIO_SPEAKER, SPEAKER_OFF);      // Speaker OFF (relay energized - contacts open)
+            gpio_set_level(GPIO_LED_SPEAKER, LED_OFF);          // Speaker LED OFF
             break;
             
         case STATE_WAIT_TONE2:
         case STATE_TONE2_DETECTED:
             // Waiting for / holding Tone2: indicate by turning LED2 ON
-            gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
-            gpio_set_level(GPIO_LED_TONE2, 1);  // LED2 ON - waiting for Tone2
-            gpio_set_level(GPIO_RELAY, RELAY_OFF);      // Relay OFF
-            gpio_set_level(GPIO_LED_RELAY, 0);          // Relay LED OFF
+            gpio_set_level(GPIO_LED_TONE1, LED_OFF);  // LED1 OFF
+            gpio_set_level(GPIO_LED_TONE2, LED_ON);  // LED2 ON - waiting for Tone2
+            gpio_set_level(GPIO_SPEAKER, SPEAKER_OFF);      // Speaker OFF (relay energized - contacts open)
+            gpio_set_level(GPIO_LED_SPEAKER, LED_OFF);          // Speaker LED OFF
             break;
             
         case STATE_SEQUENCE_COMPLETE:
-            gpio_set_level(GPIO_LED_TONE1, 0);  // LED1 OFF
-            gpio_set_level(GPIO_LED_TONE2, 0);  // LED2 OFF
-            gpio_set_level(GPIO_RELAY, RELAY_ON);      // Relay ON - sequence complete!
-            gpio_set_level(GPIO_LED_RELAY, 1);         // Relay LED ON
+            gpio_set_level(GPIO_LED_TONE1, LED_OFF);  // LED1 OFF
+            gpio_set_level(GPIO_LED_TONE2, LED_OFF);  // LED2 OFF
+            gpio_set_level(GPIO_SPEAKER, SPEAKER_ON);      // Speaker ON (relay de-energized - contacts closed) - sequence complete!
+            gpio_set_level(GPIO_LED_SPEAKER, LED_ON);         // Speaker LED ON
             break;
     }
 }
@@ -558,16 +566,19 @@ static bool read_bypass_switch(void) {
 }
 
 void app_main(void) {
-
-    compute_hamming_window();
-
     /* Initialize GPIO before other components */
     setup_gpio();
+
+    /* The hamming window is used to reduce spectral leakage in the FFT.  It can be computed once and reused for each FFT. */
+    compute_hamming_window();
 
     /* Create single worker task that will be notified by the ADC callback,
      * read frames from the driver and process them. */
     xTaskCreate(worker_task, "adc_worker", 4096, NULL, tskIDLE_PRIORITY + 2, &worker_task_handle);
 
+    /* ADC Continuous mode takes samples using a hardware timer in the background.  Sampling accuracy is mch better than
+    sampling handled by the main program so we'll let the ESP do this for us and use interrupts to know when a set of samples
+    are ready for processing*/
     setup_adc_continuous();
 
     /* Initialize mutexes for thread safety */
@@ -577,20 +588,9 @@ void app_main(void) {
     /* Create state machine task for 2-tone sequence detection */
     xTaskCreate(state_machine_task, "state_machine", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
     
-    ESP_LOGI(TAG, "2-Tone Decoder initialized - waiting for tone sequence...");
+    ESP_LOGI(TAG, "2-Tone Decoder initialized");
 
     while (true) {
-/*
-        if (mag_mutex && xSemaphoreTake(mag_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            float local_snr_tone1 = snr_tone1;
-            float local_snr_tone2 = snr_tone2;
-            xSemaphoreGive(mag_mutex);
-            
-            detection_state_t current = get_current_state();
-            ESP_LOGI(TAG, "State: %d | SNR: Tone1=%.1fdB, Tone2=%.1fdB", 
-                     current, local_snr_tone1, local_snr_tone2);
-        }
-*/
         vTaskDelay(pdMS_TO_TICKS(10000)); // 10 second delay - main loop has no active functionality
     }
 }

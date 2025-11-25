@@ -7,7 +7,7 @@ A high-performance dual-tone sequential decoder designed for ESP32-S3 microcontr
 - **Dual-tone sequential detection** with configurable frequencies
 - **Real-time signal processing** using Goertzel algorithm with Hamming windowing
 - **Adaptive SNR averaging** for robust detection in noisy environments
-- **GPIO control** with LED indicators and relay output
+- **GPIO control** with LED indicators and speaker (relay) output
 - **Manual bypass switch** for testing and emergency activation
 - **State machine architecture** for reliable sequence detection
 - **Configurable parameters** via preprocessor defines
@@ -17,7 +17,7 @@ A high-performance dual-tone sequential decoder designed for ESP32-S3 microcontr
 - **ESP32-S3** development board
 - **ADC input** on GPIO2 for audio signal
 - **LEDs** connected to GPIO4 (Tone1) and GPIO5 (Tone2)
-- **Relay or output device** connected to GPIO6
+- **Speaker (via relay)** connected to GPIO1
 - **Bypass switch** connected to GPIO7 (with pulldown)
 - **Audio input circuit** (amplifier/filter recommended)
 
@@ -39,24 +39,25 @@ A high-performance dual-tone sequential decoder designed for ESP32-S3 microcontr
 | Pin | Function | Description |
 |-----|----------|-------------|
 | GPIO2 | ADC Input | Audio signal input (ADC1_CH1) |
-| GPIO4 | LED 1 | Indicates waiting for Tone 1 |
-| GPIO5 | LED 2 | Indicates waiting for Tone 2 |
-| GPIO6 | Relay Output | Activates when sequence complete |
-| GPIO7 | Bypass Switch | Manual override (HIGH=bypass) |
+| GPIO7 | LED 1 | Indicates waiting for Tone 1 |
+| GPIO6 | LED 2 | Indicates waiting for Tone 2 |
+| GPIO5 | Speaker LED | Indicates speaker state |
+| GPIO1 | Speaker (relay) Output | Activates (connects speaker) when sequence complete |
+| GPIO12 | Bypass Switch | Manual override (HIGH=bypass) |
 
 ## Operation Modes
 
 ### Normal Operation
-1. **IDLE**: LED1 ON, waiting for Tone 1
+1. **WAIT_TONE1**: LED1 ON, waiting for Tone 1
 2. **TONE1_DETECTED**: LED1 ON, verifying Tone 1 duration
 3. **WAIT_TONE2**: LED2 ON, waiting for Tone 2
 4. **TONE2_DETECTED**: LED2 ON, verifying Tone 2 duration
-5. **SEQUENCE_COMPLETE**: All LEDs OFF, Relay ON
+5. **SEQUENCE_COMPLETE**: All LEDs OFF, Speaker ON (relay connects speaker)
 
 ### Bypass Mode
-- **Switch HIGH**: Immediately activates relay (bypass tone detection)
+- **Switch HIGH**: Immediately activates speaker (bypass tone detection)
 - **Switch LOW**: Returns to normal operation
-- **HIGH→LOW transition**: Resets state machine to IDLE
+- **HIGH→LOW transition**: Resets state machine to WAIT_TONE1
 
 ## Signal Processing
 
@@ -103,15 +104,16 @@ All key parameters can be modified in `main/main.c`:
 
 ```c
 // Tone frequencies
-#define TONE1_FREQ      1185.2f // First tone frequency in Hz
-#define TONE2_FREQ      1285.8f // Second tone frequency in Hz
+// Tone frequencies (typed constants)
+static const float TONE1_FREQ = 1185.2f; // First tone frequency in Hz
+static const float TONE2_FREQ = 1285.8f; // Second tone frequency in Hz
 
-// Tone duration requirements
-#define TONE1_DURATION_MS 500   // Duration Tone1 must be held (ms)
-#define TONE2_DURATION_MS 2000  // Duration Tone2 must be held (ms)
+// Tone duration requirements (ms)
+static const uint32_t TONE1_DURATION_MS = 500;
+static const uint32_t TONE2_DURATION_MS = 2000;
 
 // Detection sensitivity
-#define SNR_THRESHOLD     20.0f // SNR detection threshold in dB
+static const float SNR_THRESHOLD = 20.0f; // SNR detection threshold in dB
 ```
 
 ## Timing Characteristics

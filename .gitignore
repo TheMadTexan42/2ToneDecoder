@@ -24,6 +24,11 @@ build/
 *.out
 *.exe # For any host-side utilities compiled on Windows
 
+# Development and build directories
+.devcontainer/
+.vscode/
+components/
+
 # ESP-IDF specific build outputs
 *.bin
 *.elf

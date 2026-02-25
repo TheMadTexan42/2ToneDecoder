@@ -121,13 +121,97 @@ On boot, the system **starts in bypass mode**.
 
 ## 🛠 Building & Flashing
 
-This project uses **ESP‑IDF**.
+This project is built using **ESP‑IDF v5.5.2** and developed with the **ESP‑IDF Extension for VS Code**, which provides integrated configuration, building, flashing, and monitoring tools.
+
+You may build and flash the firmware using either the **VS Code GUI workflow** or the **command‑line tools** included with ESP‑IDF.
+
+---
+
+### 🔹 ESP‑IDF Version
+
+This project targets:
+
+- **ESP‑IDF:** v5.5.2  
+- **Target chip:** `esp32s3`  
+- **Toolchain:** Installed automatically by the ESP‑IDF VS Code extension or via `install.sh` / `install.bat`
+
+Make sure your environment is set to ESP‑IDF 5.5.2 before building.
+
+---
+
+## 🚀 Building & Flashing Using VS Code (Recommended)
+
+The ESP‑IDF VS Code extension provides a streamlined workflow:
+
+1. Open the project folder in VS Code  
+2. Ensure the ESP‑IDF extension is installed and configured  
+3. In the left ESP‑IDF sidebar:
+   - Click **Set Target** → choose **ESP32‑S3**
+   - Click **Build** to compile the project  
+   - Click **Flash** to upload firmware to the board  
+   - Click **Monitor** to view serial output
+
+The extension automatically handles:
+
+- Environment activation  
+- CMake configuration  
+- Toolchain selection  
+- Serial port detection  
+
+This is the easiest and most reliable workflow for ESP‑IDF 5.5.2.
+
+---
+
+## 🚀 Building & Flashing Using Command Line
+
+If you prefer the terminal, activate your ESP‑IDF environment and run:
 
 ```bash
 idf.py set-target esp32s3
 idf.py build
+idf.py flash
+idf.py monitor
+```
+
+Or combine flashing + monitoring:
+
+```bash
 idf.py flash monitor
 ```
+
+### Notes
+
+- The project uses **CMake**, which is handled automatically by `idf.py`.
+- Ensure your USB serial port is accessible (e.g., `/dev/ttyACM0`, `/dev/ttyUSB0`, or COMx on Windows).
+- If you have multiple ESP devices connected, specify the port:
+
+```bash
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+---
+
+## 🧩 Project Structure
+
+```
+main/
+ └── main.c        # Full application: ADC, DSP, state machine, GPIO, tasks
+CMakeLists.txt
+README.md
+```
+
+---
+
+## ⚠️ Important Build Notes
+
+- This project uses **continuous ADC mode**, which is fully supported in ESP‑IDF 5.5.2.
+- If you switch ESP‑IDF versions, re-run:
+  ```bash
+  idf.py fullclean
+  ```
+  to avoid cached build artifacts from older toolchains.
+- Always verify that the VS Code extension is using the correct ESP‑IDF version (shown in the bottom status bar).
+
 
 ---
 

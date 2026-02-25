@@ -50,8 +50,10 @@ static const uint32_t TONE2_DURATION_MS = 2000;  // Duration Tone2 must be held 
 enum {
     SAMPLE_RATE = 8192,   // Optimal power-of-2 sample rate (2^13) for excellent bin alignment
     FRAME_SIZE = 2048,    // Power-of-2 for optimal performance and FFT compatibility (4 Hz resolution)
-    BIN_TONE1 = 296,      // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
-    BIN_TONE2 = 321       // Center bin for TONE2_FREQ (1285.8 * 2048 / 8192 = 321.45 → bin 321)
+    // OLD: BIN_TONE1 = 296,      // Center bin for TONE1_FREQ (1185.2 * 2048 / 8192 = 296.3 → bin 296)
+    // OLD: BIN_TONE2 = 321       // Center bin for TONE2_FREQ (1285.8 * 2048 / 8192 = 321.45 → bin 321)
+    BIN_TONE1 = 497,      // Center bin for TONE1_FREQ (1989.0 * 2048 / 8192 = 497.25 → bin 497)
+    BIN_TONE2 = 600       // Center bin for TONE2_FREQ (2401.0 * 2048 / 8192 = 600.25 → bin 600)
 };
 
 // SNR averaging parameters (enum for compile-time constants)

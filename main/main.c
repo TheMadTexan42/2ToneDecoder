@@ -1,7 +1,8 @@
 /*
  * 2-Tone Decoder for ESP32-S3
  * Detects configurable tone sequences using Goertzel algorithm
- * Current configuration: TONE1_FREQ and TONE2_FREQ (see defines)
+ * The selected tones are determined by the BIN_TONE1 and BIN_TONE2 constants, which specify the target FFT bins for detection.
+ * Currently set to BIN_TONE1=497 (1989 Hz) and BIN_TONE2=600 (2401 Hz).
  */
 
 // ============================================================================

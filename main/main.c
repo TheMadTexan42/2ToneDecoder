@@ -362,7 +362,7 @@ static void state_machine_task(void *pvParameters) {
         
         // Skip tone detection if in bypass mode
         if (bypass_mode) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(25));
             continue;
         }
         if (mag_mutex && xSemaphoreTake(mag_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -433,20 +433,12 @@ static void state_machine_task(void *pvParameters) {
                     break;
                     
                 case STATE_SEQUENCE_COMPLETE:
-                    ESP_LOGI(TAG, "2-tone sequence completed! Speaker activated.");
-                    
-                    // Reset to idle after 60 seconds
-                    if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                        if ((current_tick - state_timer) >= pdMS_TO_TICKS(60000)) {
-                            ESP_LOGI(TAG, "Auto-resetting to WAIT_TONE1 state after 60 seconds");
-                            current_state = STATE_WAIT_TONE1;
-                        }
-                        xSemaphoreGive(state_mutex);
-                    }
+                    //ESP_LOGI(TAG, "2-tone sequence completed! Speaker activated. Waiting for button reset.");
+                    // Stay in this state until user presses the reset button
                     break;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(100)); // Check state every 100ms
+        vTaskDelay(pdMS_TO_TICKS(25)); // Check state every 25ms (20 checks per 500ms tone duration)
     }
 }
 
